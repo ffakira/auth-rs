@@ -51,7 +51,7 @@ struct ResendOtp {
 }
 
 #[post("/register")]
-pub async fn register(user: web::Json<User>) -> impl Responder {
+async fn register(user: web::Json<User>) -> impl Responder {
     let mut user_data = user.into_inner();
 
     if let Err(errors) = user_data.validate() {
@@ -134,7 +134,7 @@ pub async fn register(user: web::Json<User>) -> impl Responder {
 }
 
 #[post("/verify")]
-pub async fn verify(otp: web::Json<Otp>) -> impl Responder {
+async fn verify(otp: web::Json<Otp>) -> impl Responder {
     let otp_data = otp.into_inner();
     let current_time = Utc::now().timestamp() as i64;
     let filter = doc! {
@@ -216,7 +216,7 @@ pub async fn verify(otp: web::Json<Otp>) -> impl Responder {
 }
 
 #[post("/login")]
-pub async fn login(user: web::Json<User>) -> impl Responder {
+async fn login(user: web::Json<User>) -> impl Responder {
     let user_data: User = user.into_inner();
 
     if let Err(errors) = user_data.validate() {
@@ -274,7 +274,7 @@ pub async fn login(user: web::Json<User>) -> impl Responder {
 }
 
 #[post("/resend-otp")]
-pub async fn resend_otp(email: web::Json<ResendOtp>) -> impl Responder {
+async fn resend_otp(email: web::Json<ResendOtp>) -> impl Responder {
     let email_data = email.into_inner();
     if let Err(errors) = email_data.validate() {
         return HttpResponse::BadRequest().json(json!({
@@ -335,7 +335,7 @@ pub async fn resend_otp(email: web::Json<ResendOtp>) -> impl Responder {
 }
 
 #[post("/logout")]
-pub async fn logout() -> impl Responder {
+async fn logout() -> impl Responder {
     let cookie = Cookie::build("logged_in", "")
         .path("/")
         .max_age(CookieDuration::seconds(0))
@@ -352,7 +352,7 @@ pub async fn logout() -> impl Responder {
 }
 
 #[post("/forgot-password/{uuid}")]
-pub async fn forgot_password(
+async fn forgot_password(
     uuid: web::Path<String>,
     user: web::Json<ForgotPassword>,
 ) -> impl Responder {
@@ -361,6 +361,15 @@ pub async fn forgot_password(
     HttpResponse::Ok().json(json!({
         "uuid": uuid.to_string(),
     }))
+}
+
+pub fn configure(cfg: &mut web::ServiceConfig) {
+    cfg.service(register);
+    cfg.service(verify);
+    // cfg.service(login);
+    cfg.service(resend_otp);
+    // cfg.service(logout);
+    // cfg.service(forgot_password);
 }
 
 async fn create_unique_index(db: &Database) -> Result<(), Error> {
