@@ -1,14 +1,11 @@
 use actix_web::{
     cookie::{self, time::Duration},
-    get,
-    App,
-    HttpResponse, 
-    HttpServer, 
-    Responder,
+    get, App, HttpResponse, HttpServer, Responder,
 };
 mod handlers;
 use handlers::auth;
 mod db;
+mod services;
 
 #[get("/")]
 async fn index() -> impl Responder {
@@ -16,8 +13,9 @@ async fn index() -> impl Responder {
         .cookie(
             cookie::Cookie::build("logged_in", "true")
                 .max_age(Duration::seconds(300))
-                .finish()
-        ).finish()
+                .finish(),
+        )
+        .finish()
 }
 
 #[actix_web::main]

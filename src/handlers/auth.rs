@@ -1,25 +1,15 @@
+use crate::{db, services};
 use actix_web::{
     cookie::{time::Duration as CookieDuration, Cookie},
-    post,
-    web,
-    HttpResponse,
-    Responder,
+    post, web, HttpResponse, Responder,
 };
 use bcrypt::{hash, DEFAULT_COST};
-use serde::{Deserialize, Serialize};
-use mongodb::{
-    bson::doc,
-    error::Error,
-    options::IndexOptions,
-    Collection,
-    Database,
-    IndexModel
-};
-use serde_json::json;
 use chrono::{Duration, Utc};
-use validator::Validate;
+use mongodb::{bson::doc, error::Error, options::IndexOptions, Collection, Database, IndexModel};
 use rand::prelude::*;
-use crate::db;
+use serde::{Deserialize, Serialize};
+use serde_json::json;
+use validator::Validate;
 
 #[derive(Serialize, Validate, Deserialize)]
 struct User {
@@ -61,7 +51,7 @@ pub async fn register(user: web::Json<User>) -> impl Responder {
     if let Err(errors) = user_data.validate() {
         return HttpResponse::BadRequest().json(json!({
             "error": errors
-        }))
+        }));
     }
 
     // Hash password
@@ -95,7 +85,7 @@ pub async fn register(user: web::Json<User>) -> impl Responder {
     };
 
     match create_unique_index(&db).await {
-        Ok(_) => {},
+        Ok(_) => {}
         Err(_) => {
             return HttpResponse::InternalServerError().json(json!({
                 "error": "failed to create unique index"
@@ -113,18 +103,26 @@ pub async fn register(user: web::Json<User>) -> impl Responder {
         }
     };
 
-    match create_otp(email).await {
+    match create_otp(&email).await {
         Ok(otp_code) => {
-            return HttpResponse::Ok().json(json!({
-                "message": "user registered successfully",
-                "otp": otp_code
-            }))
-        },
-        Err(_) => {
+            match services::mail::send_email_confirmation(&email, &otp_code.to_string()).await {
+                Ok(_) => {
+                    return HttpResponse::Ok().json(json!({
+                        "message": "user registered successfully",
+                        "otp": otp_code
+                    }));
+                }
+                Err(err) => {
+                    return HttpResponse::InternalServerError().json(json!({
+                        "error": format!("failed to send email: {}", err)
+                    }))
+                }
+            }
+        }
+        Err(err) => {
             return HttpResponse::InternalServerError().json(json!({
-                "error": "failed to create otp"
+                "error": format!("failed to create otp: {}", err)
             }))
-        
         }
     }
 }
@@ -161,10 +159,13 @@ pub async fn verify(otp: web::Json<Otp>) -> impl Responder {
                         "$set": { "is_used": true }
                     };
 
-                    if let Err(_) = otp_collection.update_one(update_filter, update_data, None).await {
+                    if let Err(_) = otp_collection
+                        .update_one(update_filter, update_data, None)
+                        .await
+                    {
                         return HttpResponse::InternalServerError().json(json!({
                             "error": "failed to update otp"
-                        }))
+                        }));
                     }
 
                     let user_filter = doc! {
@@ -174,29 +175,32 @@ pub async fn verify(otp: web::Json<Otp>) -> impl Responder {
                         "$set": { "is_verified": true }
                     };
                     let user_collection: Collection<User> = db.collection("users");
-                    match user_collection.find_one_and_update(user_filter, user_update, None).await {
+                    match user_collection
+                        .find_one_and_update(user_filter, user_update, None)
+                        .await
+                    {
                         Ok(_) => {
                             // If user verified successfully, return success response
                             return HttpResponse::Ok().json(json!({
                                 "message": "user verified successfully"
-                            }))
-                        },
+                            }));
+                        }
                         Err(_) => {
                             // If failed to update user, return error response
                             return HttpResponse::InternalServerError().json(json!({
                                 "error": "failed to update user"
-                            }))
+                            }));
                         }
                     }
-                },
+                }
                 None => {
                     // If OTP not found, return error response
                     return HttpResponse::BadRequest().json(json!({
                         "error": "otp not found"
-                    }))
+                    }));
                 }
             }
-        },
+        }
         Err(_) => {
             return HttpResponse::NotFound().json(json!({
                 "error": "failed to find otp"
@@ -212,7 +216,7 @@ pub async fn login(user: web::Json<User>) -> impl Responder {
     if let Err(errors) = user_data.validate() {
         return HttpResponse::BadRequest().json(json!({
             "error": errors
-        }))
+        }));
     }
 
     let filter = doc! {
@@ -230,35 +234,29 @@ pub async fn login(user: web::Json<User>) -> impl Responder {
 
     let collection: Collection<User> = db.collection("users");
     match collection.find_one(filter, None).await {
-        Ok(result) => {
-            match result {
-                Some(user) => {
-                    match bcrypt::verify(user_data.password, &user.password) {
-                        Ok(_) => {
-                            let auth_cookie = Cookie::build("logged_in", "true")
-                                .path("/")
-                                .secure(false)
-                                .http_only(true)
-                                .max_age(CookieDuration::minutes(10))
-                                .finish();
-                            return HttpResponse::Ok()
-                                .cookie(auth_cookie)
-                                .json(json!({
-                                    "message": "user logged in successfully"
-                                }))
-                        },
-                        Err(_) => {
-                            return HttpResponse::BadRequest().json(json!({
-                                "error": "invalid password"
-                            }))
-                        }
-                    }
-                },
-                None => {
+        Ok(result) => match result {
+            Some(user) => match bcrypt::verify(user_data.password, &user.password) {
+                Ok(_) => {
+                    let auth_cookie = Cookie::build("logged_in", "true")
+                        .path("/")
+                        .secure(false)
+                        .http_only(true)
+                        .max_age(CookieDuration::minutes(10))
+                        .finish();
+                    return HttpResponse::Ok().cookie(auth_cookie).json(json!({
+                        "message": "user logged in successfully"
+                    }));
+                }
+                Err(_) => {
                     return HttpResponse::BadRequest().json(json!({
-                        "error": "user not found"
+                        "error": "invalid password"
                     }))
                 }
+            },
+            None => {
+                return HttpResponse::BadRequest().json(json!({
+                    "error": "user not found"
+                }))
             }
         },
         Err(_) => {
@@ -275,21 +273,23 @@ pub async fn logout() -> impl Responder {
         .path("/")
         .max_age(CookieDuration::seconds(0))
         .finish();
-    let mut response = HttpResponse::Ok()
-        .json(json!({
-            "message": "user logged out successfully"
-        }));
+    let mut response = HttpResponse::Ok().json(json!({
+        "message": "user logged out successfully"
+    }));
     if let Err(_) = response.add_cookie(&cookie) {
         return HttpResponse::InternalServerError().json(json!({
             "error": "failed to add cookie"
-        }))
+        }));
     }
     response
 }
 
 #[post("/forgot-password/{uuid}")]
-pub async fn forgot_password(uuid: web::Path<String>, user: web::Json<ForgotPassword>) -> impl Responder {
-    let user_data = user.into_inner();
+pub async fn forgot_password(
+    uuid: web::Path<String>,
+    user: web::Json<ForgotPassword>,
+) -> impl Responder {
+    let _user_data = user.into_inner();
 
     HttpResponse::Ok().json(json!({
         "uuid": uuid.to_string(),
@@ -306,10 +306,10 @@ async fn create_unique_index(db: &Database) -> Result<(), Error> {
     Ok(())
 }
 
-async fn create_otp(email: String) -> Result<u32, Error> {
+async fn create_otp(email: &str) -> Result<u32, Error> {
     let (_, db) = match db::mongo_client().await {
         Ok(client_db) => client_db,
-        Err(e) => return Err(e)
+        Err(e) => return Err(e),
     };
     let collection: Collection<Otp> = db.collection("otp");
 
@@ -320,7 +320,7 @@ async fn create_otp(email: String) -> Result<u32, Error> {
     let expired_at = current_time + Duration::try_minutes(10).unwrap().num_seconds() as u64;
 
     let otp_data = Otp {
-        email: email,
+        email: email.to_string(),
         code: otp_code,
         is_used: false,
         created_at: Some(Utc::now().timestamp() as u64),
