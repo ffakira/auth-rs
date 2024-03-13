@@ -28,6 +28,7 @@ async fn main() -> std::io::Result<()> {
             .service(index)
             .service(auth::register)
             .service(auth::verify)
+            .service(auth::resend_otp)
     })
     .bind(("127.0.0.1", 8080))?
     .run()

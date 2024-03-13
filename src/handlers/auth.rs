@@ -44,6 +44,12 @@ struct ForgotPassword {
     expired_at: Option<u64>,
 }
 
+#[derive(Serialize, Validate, Deserialize)]
+struct ResendOtp {
+    #[validate(email)]
+    email: String,
+}
+
 #[post("/register")]
 pub async fn register(user: web::Json<User>) -> impl Responder {
     let mut user_data = user.into_inner();
@@ -262,6 +268,67 @@ pub async fn login(user: web::Json<User>) -> impl Responder {
         Err(_) => {
             return HttpResponse::InternalServerError().json(json!({
                 "error": "failed to find user"
+            }))
+        }
+    }
+}
+
+#[post("/resend-otp")]
+pub async fn resend_otp(email: web::Json<ResendOtp>) -> impl Responder {
+    let email_data = email.into_inner();
+    if let Err(errors) = email_data.validate() {
+        return HttpResponse::BadRequest().json(json!({
+            "error": errors
+        }));
+    }
+
+    let email = email_data.email.trim().to_lowercase();
+
+    let (_, db) = match db::mongo_client().await {
+        Ok(client_db) => client_db,
+        Err(_) => {
+            return HttpResponse::InternalServerError().json(json!({
+                "error": "failed to connect to database"
+            }))
+        }
+    };
+    
+    let filter = doc! {
+        "email": &email_data.email,
+        "is_used": false,
+    };
+    let update = doc! {
+        "$set": { "is_used": true }
+    };
+    let otp_collection: Collection<Otp> = db.collection("otp");
+    match otp_collection.update_many(filter, update, None).await {
+        Ok(_) => {},
+        Err(_) => {
+            return HttpResponse::InternalServerError().json(json!({
+                "error": "failed to update otp"
+            }))
+        }
+    }
+
+    match create_otp(&email).await {
+        Ok(otp_code) => {
+            match services::mail::send_email_confirmation(&email, &otp_code.to_string()).await {
+                Ok(_) => {
+                    return HttpResponse::Ok().json(json!({
+                        "message": "otp resent successfully",
+                        "otp": otp_code
+                    }));
+                }
+                Err(err) => {
+                    return HttpResponse::InternalServerError().json(json!({
+                        "error": format!("failed to send email: {}", err)
+                    }))
+                }
+            }
+        }
+        Err(err) => {
+            return HttpResponse::InternalServerError().json(json!({
+                "error": format!("failed to create otp: {}", err)
             }))
         }
     }
