@@ -4,7 +4,7 @@ use actix_web::{
 };
 use dotenv::dotenv;
 mod handlers;
-use handlers::auth;
+use handlers::{auth, product};
 mod db;
 mod services;
 use io::{Error, ErrorKind};
@@ -40,6 +40,7 @@ async fn main() -> std::io::Result<()> {
         App::new()
             .app_data(client.clone())
             .configure(auth::configure)
+            .configure(product::configure)
     })
     .bind(format!("{}:{}", host, port))?
     .run()
