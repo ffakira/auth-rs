@@ -3,56 +3,22 @@ use actix_web::{
     cookie::{time::Duration as CookieDuration, Cookie},
     post, web, HttpResponse, Responder,
 };
-use bcrypt::{hash, DEFAULT_COST};
-use chrono::{Duration, Utc};
-use mongodb::{bson::doc, error::Error, options::IndexOptions, Collection, Database, IndexModel};
+use chrono::Utc;
+use bcrypt;
+use mongodb::{
+    bson::doc,
+    error::Error,
+    options::IndexOptions,
+    Collection, Database, IndexModel,
+};
 use rand::prelude::*;
-use serde::{Deserialize, Serialize};
 use serde_json::json;
 use validator::Validate;
-
-#[derive(Serialize, Validate, Deserialize)]
-struct User {
-    #[validate(email)]
-    email: String,
-    #[validate(length(min = 8))]
-    password: String,
-    is_verified: Option<bool>,
-    created_at: Option<u64>,
-    updated_at: Option<u64>,
-}
-
-#[derive(Serialize, Validate, Deserialize)]
-struct Otp {
-    #[validate(email)]
-    email: String,
-    code: u32,
-    is_used: bool,
-    created_at: Option<u64>,
-    expired_at: Option<u64>,
-}
-
-#[derive(Serialize, Validate, Deserialize)]
-struct ForgotPassword {
-    #[validate(email)]
-    email: String,
-    #[validate(length(min = 8))]
-    password: String,
-    uuid: String,
-    is_used: bool,
-    created_at: Option<u64>,
-    expired_at: Option<u64>,
-}
-
-#[derive(Serialize, Validate, Deserialize)]
-struct ResendOtp {
-    #[validate(email)]
-    email: String,
-}
+use crate::models::user::{User, Otp, ResendOtp, ForgotPassword};
 
 #[post("/register")]
 async fn register(user: web::Json<User>) -> impl Responder {
-    let mut user_data = user.into_inner();
+    let user_data = user.into_inner();
 
     if let Err(errors) = user_data.validate() {
         return HttpResponse::BadRequest().json(json!({
@@ -60,24 +26,13 @@ async fn register(user: web::Json<User>) -> impl Responder {
         }));
     }
 
-    // Hash password
-    let hashed_password = match hash(user_data.password, DEFAULT_COST) {
-        Ok(password) => password,
+    let user = match User::new(user_data.email, user_data.password) {
+        Ok(user) => user,
         Err(_) => {
             return HttpResponse::InternalServerError().json(json!({
-                "error": "failed to hash password"
+                "error": "failed to create user"
             }))
         }
-    };
-
-    let email = user_data.email.trim().to_lowercase().clone();
-    // Set fields
-    user_data = User {
-        password: hashed_password,
-        email: user_data.email.trim().to_lowercase(),
-        is_verified: Some(false),
-        created_at: Some(Utc::now().timestamp() as u64),
-        updated_at: Some(Utc::now().timestamp() as u64),
     };
 
     // Insert to database
@@ -100,7 +55,7 @@ async fn register(user: web::Json<User>) -> impl Responder {
     }
 
     let collection: Collection<User> = db.collection("users");
-    match collection.insert_one(user_data, None).await {
+    match collection.insert_one(&user, None).await {
         Ok(result) => result,
         Err(_) => {
             return HttpResponse::InternalServerError().json(json!({
@@ -109,9 +64,9 @@ async fn register(user: web::Json<User>) -> impl Responder {
         }
     };
 
-    match create_otp(&email).await {
+    match create_otp(&user.email).await {
         Ok(otp_code) => {
-            match services::mail::send_email_confirmation(&email, &otp_code.to_string()).await {
+            match services::mail::send_email_confirmation(&user.email, &otp_code.to_string()).await {
                 Ok(_) => {
                     return HttpResponse::Ok().json(json!({
                         "message": "user registered successfully",
@@ -292,7 +247,7 @@ async fn resend_otp(email: web::Json<ResendOtp>) -> impl Responder {
             }))
         }
     };
-    
+
     let filter = doc! {
         "email": &email_data.email,
         "is_used": false,
@@ -302,7 +257,7 @@ async fn resend_otp(email: web::Json<ResendOtp>) -> impl Responder {
     };
     let otp_collection: Collection<Otp> = db.collection("otp");
     match otp_collection.update_many(filter, update, None).await {
-        Ok(_) => {},
+        Ok(_) => {}
         Err(_) => {
             return HttpResponse::InternalServerError().json(json!({
                 "error": "failed to update otp"
@@ -391,17 +346,7 @@ async fn create_otp(email: &str) -> Result<u32, Error> {
 
     let mut rng = rand::thread_rng();
     let otp_code: u32 = rng.gen_range(100000..=999999);
-
-    let current_time = Utc::now().timestamp() as u64;
-    let expired_at = current_time + Duration::try_minutes(10).unwrap().num_seconds() as u64;
-
-    let otp_data = Otp {
-        email: email.to_string(),
-        code: otp_code,
-        is_used: false,
-        created_at: Some(Utc::now().timestamp() as u64),
-        expired_at: Some(expired_at),
-    };
+    let otp_data = Otp::new(email.to_string(), otp_code);
 
     match collection.insert_one(otp_data, None).await {
         Ok(_) => Ok(otp_code),

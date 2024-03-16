@@ -4,6 +4,7 @@ use actix_web::{
 };
 use dotenv::dotenv;
 mod handlers;
+mod models;
 use handlers::{auth, product};
 mod db;
 mod services;
@@ -45,4 +46,21 @@ async fn main() -> std::io::Result<()> {
     .bind(format!("{}:{}", host, port))?
     .run()
     .await
+}
+
+#[cfg(test)]
+mod tests {
+    use actix_web::{http::header::ContentType, test, App};
+    use super::*;
+
+    #[actix_web::test]
+    async fn test_index() {
+        let mut app = test::init_service(
+            App::new().service(index)
+        ).await;
+
+        let req = test::TestRequest::get().uri("/").to_request();
+        let resp = test::call_service(&mut app, req).await;
+        assert_eq!(resp.status(), 200);
+    }
 }
