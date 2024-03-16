@@ -1,11 +1,13 @@
 use actix_web::{
-    cookie::{self, time::Duration}, get, web, App, HttpResponse, HttpServer, Responder
+    cookie::{self, time::Duration},
+    get, web, App, HttpResponse, HttpServer, Responder,
 };
 use dotenv::dotenv;
 mod handlers;
 mod models;
 use handlers::{auth, product};
 mod db;
+mod middleware;
 mod services;
 use io::{Error, ErrorKind};
 use mongodb::Database;
@@ -13,7 +15,7 @@ use std::{env, io};
 
 #[derive(Clone)]
 pub struct AppState {
-    db: Database
+    db: Database,
 }
 
 #[get("/")]
@@ -46,6 +48,7 @@ async fn main() -> std::io::Result<()> {
     HttpServer::new(move || {
         App::new()
             .app_data(app_state.clone())
+            .wrap(middleware::auth::Auth)
             .configure(auth::configure)
             .configure(product::configure)
     })
@@ -53,14 +56,6 @@ async fn main() -> std::io::Result<()> {
     .run()
     .await
 }
-
-// struct CookieMiddleware;
-
-// impl <S, B> actix_web::middleware::Middleware<S, B> for CookieMiddleware {
-//     fn start(&self, req: &HttpResponse<S>, _opts: &actix_web::middleware::Started) {
-//     }
-// }
-
 
 #[cfg(test)]
 mod tests {
