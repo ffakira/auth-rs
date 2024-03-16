@@ -82,7 +82,7 @@ pub async fn send_email_confirmation(to: &str, otp_code: &str) -> std::result::R
     .port(email_config.smtp_port)
     .build();
 
-    let tera = match Tera::new("src/templates/en/*.html") {
+    let tera = match Tera::new("templates/en/*.html") {
         Ok(t) => t,
         Err(e) => {
             return Err(EmailError::TemplateError(format!(
