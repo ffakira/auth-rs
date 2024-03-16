@@ -1,17 +1,19 @@
 use actix_web::{
-    cookie::{self, time::Duration},
+    cookie::{self, time::Duration, Key},
     get, web, App, HttpResponse, HttpServer, Responder,
 };
-use dotenv::dotenv;
-mod handlers;
-mod models;
+use dotenvy::dotenv;
 use handlers::{auth, product};
-mod db;
-mod middleware;
-mod services;
 use io::{Error, ErrorKind};
 use mongodb::Database;
 use std::{env, io};
+use actix_session::{Session, SessionMiddleware};
+
+mod db;
+mod handlers;
+mod middleware;
+mod models;
+mod services;
 
 #[derive(Clone)]
 pub struct AppState {

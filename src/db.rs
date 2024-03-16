@@ -1,4 +1,4 @@
-use dotenv::dotenv;
+use dotenvy::dotenv;
 use mongodb::{error::Error as MongoError, options::ClientOptions, Client, Database};
 use std::{env, io};
 
