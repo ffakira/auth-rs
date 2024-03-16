@@ -1,6 +1,5 @@
 use actix_web::{
-    cookie::{self, time::Duration},
-    get, App, HttpResponse, HttpServer, Responder,
+    cookie::{self, time::Duration}, get, web, App, HttpResponse, HttpServer, Responder
 };
 use dotenv::dotenv;
 mod handlers;
@@ -9,7 +8,13 @@ use handlers::{auth, product};
 mod db;
 mod services;
 use io::{Error, ErrorKind};
+use mongodb::Database;
 use std::{env, io};
+
+#[derive(Clone)]
+pub struct AppState {
+    db: Database
+}
 
 #[get("/")]
 async fn index() -> impl Responder {
@@ -35,11 +40,12 @@ async fn main() -> std::io::Result<()> {
     let host = env::var("SERVER_HOST")
         .map_err(|err| Error::new(ErrorKind::Other, format!("Error loading HOST: {}", err)))?;
 
-    let (client, _) = db::mongo_client().await.unwrap();
+    let (_, db) = db::mongo_client().await.unwrap();
+    let app_state = web::Data::new(AppState { db });
 
     HttpServer::new(move || {
         App::new()
-            .app_data(client.clone())
+            .app_data(app_state.clone())
             .configure(auth::configure)
             .configure(product::configure)
     })
@@ -47,6 +53,14 @@ async fn main() -> std::io::Result<()> {
     .run()
     .await
 }
+
+// struct CookieMiddleware;
+
+// impl <S, B> actix_web::middleware::Middleware<S, B> for CookieMiddleware {
+//     fn start(&self, req: &HttpResponse<S>, _opts: &actix_web::middleware::Started) {
+//     }
+// }
+
 
 #[cfg(test)]
 mod tests {

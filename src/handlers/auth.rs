@@ -1,23 +1,20 @@
-use crate::{db, services};
+use crate::{
+    models::user::{ForgotPassword, Otp, ResendOtp, User},
+    services, AppState,
+};
 use actix_web::{
     cookie::{time::Duration as CookieDuration, Cookie},
     post, web, HttpResponse, Responder,
 };
-use chrono::Utc;
 use bcrypt;
-use mongodb::{
-    bson::doc,
-    error::Error,
-    options::IndexOptions,
-    Collection, Database, IndexModel,
-};
+use chrono::Utc;
+use mongodb::{bson::doc, error::Error, options::IndexOptions, Collection, Database, IndexModel};
 use rand::prelude::*;
 use serde_json::json;
 use validator::Validate;
-use crate::models::user::{User, Otp, ResendOtp, ForgotPassword};
 
 #[post("/register")]
-async fn register(user: web::Json<User>) -> impl Responder {
+async fn register(user: web::Json<User>, data: web::Data<AppState>) -> impl Responder {
     let user_data = user.into_inner();
 
     if let Err(errors) = user_data.validate() {
@@ -35,17 +32,7 @@ async fn register(user: web::Json<User>) -> impl Responder {
         }
     };
 
-    // Insert to database
-    let (_, db) = match db::mongo_client().await {
-        Ok(client_db) => client_db,
-        Err(_) => {
-            return HttpResponse::InternalServerError().json(json!({
-                "error": "failed to connect to database"
-            }))
-        }
-    };
-
-    match create_unique_index(&db).await {
+    match create_unique_index(&data.db).await {
         Ok(_) => {}
         Err(_) => {
             return HttpResponse::InternalServerError().json(json!({
@@ -54,7 +41,7 @@ async fn register(user: web::Json<User>) -> impl Responder {
         }
     }
 
-    let collection: Collection<User> = db.collection("users");
+    let collection: Collection<User> = data.db.collection("users");
     match collection.insert_one(&user, None).await {
         Ok(result) => result,
         Err(_) => {
@@ -64,9 +51,10 @@ async fn register(user: web::Json<User>) -> impl Responder {
         }
     };
 
-    match create_otp(&user.email).await {
+    match create_otp(&user.email, &data.db).await {
         Ok(otp_code) => {
-            match services::mail::send_email_confirmation(&user.email, &otp_code.to_string()).await {
+            match services::mail::send_email_confirmation(&user.email, &otp_code.to_string()).await
+            {
                 Ok(_) => {
                     return HttpResponse::Ok().json(json!({
                         "message": "user registered successfully",
@@ -89,7 +77,7 @@ async fn register(user: web::Json<User>) -> impl Responder {
 }
 
 #[post("/verify")]
-async fn verify(otp: web::Json<Otp>) -> impl Responder {
+async fn verify(otp: web::Json<Otp>, data: web::Data<AppState>) -> impl Responder {
     let otp_data = otp.into_inner();
     let current_time = Utc::now().timestamp() as i64;
     let filter = doc! {
@@ -97,15 +85,7 @@ async fn verify(otp: web::Json<Otp>) -> impl Responder {
         "is_used": false,
         "expired_at": { "$lt": current_time }
     };
-    let (_, db) = match db::mongo_client().await {
-        Ok(client_db) => client_db,
-        Err(_) => {
-            return HttpResponse::InternalServerError().json(json!({
-                "error": "failed to connect to database"
-            }))
-        }
-    };
-    let otp_collection: Collection<Otp> = db.collection("otp");
+    let otp_collection: Collection<Otp> = data.db.collection("otp");
     match otp_collection.find_one(filter, None).await {
         Ok(result) => {
             match result {
@@ -135,7 +115,7 @@ async fn verify(otp: web::Json<Otp>) -> impl Responder {
                     let user_update = doc! {
                         "$set": { "is_verified": true }
                     };
-                    let user_collection: Collection<User> = db.collection("users");
+                    let user_collection: Collection<User> = data.db.collection("users");
                     match user_collection
                         .find_one_and_update(user_filter, user_update, None)
                         .await
@@ -171,7 +151,7 @@ async fn verify(otp: web::Json<Otp>) -> impl Responder {
 }
 
 #[post("/login")]
-async fn login(user: web::Json<User>) -> impl Responder {
+async fn login(user: web::Json<User>, data: web::Data<AppState>) -> impl Responder {
     let user_data: User = user.into_inner();
 
     if let Err(errors) = user_data.validate() {
@@ -184,16 +164,7 @@ async fn login(user: web::Json<User>) -> impl Responder {
         "email": user_data.email.trim().to_lowercase()
     };
 
-    let (_, db) = match db::mongo_client().await {
-        Ok(client_db) => client_db,
-        Err(_) => {
-            return HttpResponse::InternalServerError().json(json!({
-                "error": "failed to connect to database"
-            }))
-        }
-    };
-
-    let collection: Collection<User> = db.collection("users");
+    let collection: Collection<User> = data.db.collection("users");
     match collection.find_one(filter, None).await {
         Ok(result) => match result {
             Some(user) => match bcrypt::verify(user_data.password, &user.password) {
@@ -229,7 +200,7 @@ async fn login(user: web::Json<User>) -> impl Responder {
 }
 
 #[post("/resend-otp")]
-async fn resend_otp(email: web::Json<ResendOtp>) -> impl Responder {
+async fn resend_otp(email: web::Json<ResendOtp>, data: web::Data<AppState>) -> impl Responder {
     let email_data = email.into_inner();
     if let Err(errors) = email_data.validate() {
         return HttpResponse::BadRequest().json(json!({
@@ -239,15 +210,6 @@ async fn resend_otp(email: web::Json<ResendOtp>) -> impl Responder {
 
     let email = email_data.email.trim().to_lowercase();
 
-    let (_, db) = match db::mongo_client().await {
-        Ok(client_db) => client_db,
-        Err(_) => {
-            return HttpResponse::InternalServerError().json(json!({
-                "error": "failed to connect to database"
-            }))
-        }
-    };
-
     let filter = doc! {
         "email": &email_data.email,
         "is_used": false,
@@ -255,7 +217,7 @@ async fn resend_otp(email: web::Json<ResendOtp>) -> impl Responder {
     let update = doc! {
         "$set": { "is_used": true }
     };
-    let otp_collection: Collection<Otp> = db.collection("otp");
+    let otp_collection: Collection<Otp> = data.db.collection("otp");
     match otp_collection.update_many(filter, update, None).await {
         Ok(_) => {}
         Err(_) => {
@@ -265,7 +227,7 @@ async fn resend_otp(email: web::Json<ResendOtp>) -> impl Responder {
         }
     }
 
-    match create_otp(&email).await {
+    match create_otp(&email, &data.db).await {
         Ok(otp_code) => {
             match services::mail::send_email_confirmation(&email, &otp_code.to_string()).await {
                 Ok(_) => {
@@ -337,11 +299,7 @@ async fn create_unique_index(db: &Database) -> Result<(), Error> {
     Ok(())
 }
 
-async fn create_otp(email: &str) -> Result<u32, Error> {
-    let (_, db) = match db::mongo_client().await {
-        Ok(client_db) => client_db,
-        Err(e) => return Err(e),
-    };
+async fn create_otp(email: &str, db: &Database) -> Result<u32, Error> {
     let collection: Collection<Otp> = db.collection("otp");
 
     let mut rng = rand::thread_rng();
