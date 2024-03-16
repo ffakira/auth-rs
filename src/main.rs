@@ -50,14 +50,12 @@ async fn main() -> std::io::Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use actix_web::{http::header::ContentType, test, App};
     use super::*;
+    use actix_web::{test, App};
 
     #[actix_web::test]
     async fn test_index() {
-        let mut app = test::init_service(
-            App::new().service(index)
-        ).await;
+        let mut app = test::init_service(App::new().service(index)).await;
 
         let req = test::TestRequest::get().uri("/").to_request();
         let resp = test::call_service(&mut app, req).await;
