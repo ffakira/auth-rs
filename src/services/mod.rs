@@ -1,2 +1,2 @@
 pub mod mail;
-pub use mail::*;
+pub mod otp;

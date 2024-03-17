@@ -1,15 +1,14 @@
 use crate::{
-    models::user::{ForgotPassword, Otp, ResendOtp, User},
-    services, AppState,
+    models::user::{ForgotPassword, ResendOtp, User},
+    AppState,
 };
+use crate::services::{mail, otp::Otp};
 use actix_web::{
     cookie::{time::Duration as CookieDuration, Cookie},
     post, web, HttpResponse, Responder,
 };
 use bcrypt;
-use chrono::Utc;
 use mongodb::{bson::doc, error::Error, options::IndexOptions, Collection, Database, IndexModel};
-use rand::prelude::*;
 use serde_json::json;
 use validator::Validate;
 
@@ -51,27 +50,35 @@ async fn register(user: web::Json<User>, data: web::Data<AppState>) -> impl Resp
         }
     };
 
-    match create_otp(&user.email, &data.db).await {
-        Ok(otp_code) => {
-            match services::mail::send_email_confirmation(&user.email, &otp_code.to_string()).await
-            {
-                Ok(_) => {
-                    return HttpResponse::Ok().json(json!({
-                        "message": "user registered successfully",
-                        "otp": otp_code
-                    }));
-                }
-                Err(err) => {
-                    return HttpResponse::InternalServerError().json(json!({
-                        "error": format!("failed to send email: {}", err)
-                    }))
-                }
-            }
-        }
+    let otp = match Otp::new(user.email.clone()) {
+        Ok(otp) => otp,
         Err(err) => {
             return HttpResponse::InternalServerError().json(json!({
                 "error": format!("failed to create otp: {}", err)
-            }))
+            }));
+        }
+    };
+
+    match otp.insert_otp(&data.db).await {
+        Ok(_) => {}
+        Err(err) => {
+            return HttpResponse::InternalServerError().json(json!({
+                "error": format!("failed to insert otp: {}", err)
+            }));
+        }
+    }
+
+    match mail::send_email_confirmation(&user.email, &otp.code.to_string()).await {
+        Ok(_) => {
+            return HttpResponse::Ok().json(json!({
+                "message": "user registered successfully",
+                "otp": otp.code
+            }));
+        }
+        Err(err) => {
+            return HttpResponse::InternalServerError().json(json!({
+                "error": format!("failed to send email: {}", err)
+            }));
         }
     }
 }
@@ -79,73 +86,45 @@ async fn register(user: web::Json<User>, data: web::Data<AppState>) -> impl Resp
 #[post("/verify")]
 async fn verify(otp: web::Json<Otp>, data: web::Data<AppState>) -> impl Responder {
     let otp_data = otp.into_inner();
-    let current_time = Utc::now().timestamp() as i64;
-    let filter = doc! {
-        "email": &otp_data.email,
-        "is_used": false,
-        "expired_at": { "$lt": current_time }
-    };
-    let otp_collection: Collection<Otp> = data.db.collection("otp");
-    match otp_collection.find_one(filter, None).await {
-        Ok(result) => {
-            match result {
-                Some(_) => {
-                    let update_filter = doc! {
-                        "email": &otp_data.email,
-                        "is_used": false,
-                        "expired_at": { "$lt": current_time }
-                    };
 
-                    let update_data = doc! {
-                        "$set": { "is_used": true }
-                    };
+    if let Err(errors) = otp_data.validate() {
+        return HttpResponse::BadRequest().json(json!({
+            "error": errors
+        }));
+    }
 
-                    if let Err(_) = otp_collection
-                        .update_one(update_filter, update_data, None)
-                        .await
-                    {
+    match Otp::verify_otp(otp_data.code, otp_data.email.clone(), &data.db).await {
+        Ok(is_valid) => {
+            if is_valid {
+                let collection: Collection<User> = data.db.collection("users");
+                let filter = doc! {
+                    "email": otp_data.email.clone()
+                };
+                let update = doc! {
+                    "$set": { "is_verified": true }
+                };
+                match collection.update_one(filter, update, None).await {
+                    Ok(_) => {}
+                    Err(_) => {
                         return HttpResponse::InternalServerError().json(json!({
-                            "error": "failed to update otp"
+                            "error": "failed to update user"
                         }));
                     }
+                }
 
-                    let user_filter = doc! {
-                        "email": &otp_data.email,
-                    };
-                    let user_update = doc! {
-                        "$set": { "is_verified": true }
-                    };
-                    let user_collection: Collection<User> = data.db.collection("users");
-                    match user_collection
-                        .find_one_and_update(user_filter, user_update, None)
-                        .await
-                    {
-                        Ok(_) => {
-                            // If user verified successfully, return success response
-                            return HttpResponse::Ok().json(json!({
-                                "message": "user verified successfully"
-                            }));
-                        }
-                        Err(_) => {
-                            // If failed to update user, return error response
-                            return HttpResponse::InternalServerError().json(json!({
-                                "error": "failed to update user"
-                            }));
-                        }
-                    }
-                }
-                None => {
-                    // If OTP not found, return error response
-                    return HttpResponse::BadRequest().json(json!({
-                        "error": "otp not found"
-                    }));
-                }
+                return HttpResponse::Ok().json(json!({
+                    "message": "OTP verified successfully"
+                }));
+            } else {
+                return HttpResponse::BadRequest().json(json!({
+                    "error": "Invalid or expired OTP"
+                }));
             }
         }
-        Err(_) => {
-            return HttpResponse::NotFound().json(json!({
-                "error": "failed to find otp"
-            }))
+        Err(e) => {
+            return HttpResponse::InternalServerError().json(json!({
+                "error": format!("Failed to verify OTP: {}", e)
+            }));
         }
     }
 }
@@ -199,57 +178,57 @@ async fn login(user: web::Json<User>, data: web::Data<AppState>) -> impl Respond
     }
 }
 
-#[post("/resend-otp")]
-async fn resend_otp(email: web::Json<ResendOtp>, data: web::Data<AppState>) -> impl Responder {
-    let email_data = email.into_inner();
-    if let Err(errors) = email_data.validate() {
-        return HttpResponse::BadRequest().json(json!({
-            "error": errors
-        }));
-    }
+// #[post("/resend-otp")]
+// async fn resend_otp(email: web::Json<ResendOtp>, data: web::Data<AppState>) -> impl Responder {
+//     let email_data = email.into_inner();
+//     if let Err(errors) = email_data.validate() {
+//         return HttpResponse::BadRequest().json(json!({
+//             "error": errors
+//         }));
+//     }
 
-    let email = email_data.email.trim().to_lowercase();
+//     let email = email_data.email.trim().to_lowercase();
 
-    let filter = doc! {
-        "email": &email_data.email,
-        "is_used": false,
-    };
-    let update = doc! {
-        "$set": { "is_used": true }
-    };
-    let otp_collection: Collection<Otp> = data.db.collection("otp");
-    match otp_collection.update_many(filter, update, None).await {
-        Ok(_) => {}
-        Err(_) => {
-            return HttpResponse::InternalServerError().json(json!({
-                "error": "failed to update otp"
-            }))
-        }
-    }
+//     let filter = doc! {
+//         "email": &email_data.email,
+//         "is_used": false,
+//     };
+//     let update = doc! {
+//         "$set": { "is_used": true }
+//     };
+//     let otp_collection: Collection<Otp> = data.db.collection("otp");
+//     match otp_collection.update_many(filter, update, None).await {
+//         Ok(_) => {}
+//         Err(_) => {
+//             return HttpResponse::InternalServerError().json(json!({
+//                 "error": "failed to update otp"
+//             }))
+//         }
+//     }
 
-    match create_otp(&email, &data.db).await {
-        Ok(otp_code) => {
-            match services::mail::send_email_confirmation(&email, &otp_code.to_string()).await {
-                Ok(_) => {
-                    return HttpResponse::Ok().json(json!({
-                        "message": "otp resent successfully",
-                        "otp": otp_code
-                    }));
-                }
-                Err(err) => {
-                    return HttpResponse::InternalServerError().json(json!({
-                        "error": format!("failed to send email: {}", err)
-                    }))
-                }
-            }
-        }
-        Err(err) => {
-            return HttpResponse::InternalServerError().json(json!({
-                "error": format!("failed to create otp: {}", err)
-            }))
-        }
-    }
-}
+//     match create_otp(&email, &data.db).await {
+//         Ok(otp_code) => {
+//             match services::mail::send_email_confirmation(&email, &otp_code.to_string()).await {
+//                 Ok(_) => {
+//                     return HttpResponse::Ok().json(json!({
+//                         "message": "otp resent successfully",
+//                         "otp": otp_code
+//                     }));
+//                 }
+//                 Err(err) => {
+//                     return HttpResponse::InternalServerError().json(json!({
+//                         "error": format!("failed to send email: {}", err)
+//                     }))
+//                 }
+//             }
+//         }
+//         Err(err) => {
+//             return HttpResponse::InternalServerError().json(json!({
+//                 "error": format!("failed to create otp: {}", err)
+//             }))
+//         }
+//     }
+// }
 
 #[post("/logout")]
 async fn logout() -> impl Responder {
@@ -284,7 +263,7 @@ pub fn configure(cfg: &mut web::ServiceConfig) {
     cfg.service(register);
     cfg.service(verify);
     // cfg.service(login);
-    cfg.service(resend_otp);
+    // cfg.service(resend_otp);
     // cfg.service(logout);
     // cfg.service(forgot_password);
 }
@@ -297,17 +276,4 @@ async fn create_unique_index(db: &Database) -> Result<(), Error> {
         .build();
     collection.create_index(model, None).await?;
     Ok(())
-}
-
-async fn create_otp(email: &str, db: &Database) -> Result<u32, Error> {
-    let collection: Collection<Otp> = db.collection("otp");
-
-    let mut rng = rand::thread_rng();
-    let otp_code: u32 = rng.gen_range(100000..=999999);
-    let otp_data = Otp::new(email.to_string(), otp_code);
-
-    match collection.insert_one(otp_data, None).await {
-        Ok(_) => Ok(otp_code),
-        Err(e) => Err(e),
-    }
 }
