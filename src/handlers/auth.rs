@@ -1,6 +1,5 @@
 use crate::{
-    models::user::{ForgotPassword, ResendOtp, User},
-    AppState,
+    models::user::{ForgotPassword, ResendOtp, User}, services, AppState
 };
 use crate::services::{mail, otp::Otp};
 use actix_web::{
@@ -183,57 +182,39 @@ async fn login(user: web::Json<User>, data: web::Data<AppState>) -> impl Respond
     }
 }
 
-// #[post("/resend-otp")]
-// async fn resend_otp(email: web::Json<ResendOtp>, data: web::Data<AppState>) -> impl Responder {
-//     let email_data = email.into_inner();
-//     if let Err(errors) = email_data.validate() {
-//         return HttpResponse::BadRequest().json(json!({
-//             "error": errors
-//         }));
-//     }
+#[post("/resend-otp")]
+async fn resend_otp(email: web::Json<ResendOtp>, data: web::Data<AppState>) -> impl Responder {
+    let email_data = email.into_inner();
+    if let Err(errors) = email_data.validate() {
+        return HttpResponse::BadRequest().json(json!({
+            "error": errors
+        }));
+    }
 
-//     let email = email_data.email.trim().to_lowercase();
+    let email = email_data.email.trim().to_lowercase();
 
-//     let filter = doc! {
-//         "email": &email_data.email,
-//         "is_used": false,
-//     };
-//     let update = doc! {
-//         "$set": { "is_used": true }
-//     };
-//     let otp_collection: Collection<Otp> = data.db.collection("otp");
-//     match otp_collection.update_many(filter, update, None).await {
-//         Ok(_) => {}
-//         Err(_) => {
-//             return HttpResponse::InternalServerError().json(json!({
-//                 "error": "failed to update otp"
-//             }))
-//         }
-//     }
-
-//     match create_otp(&email, &data.db).await {
-//         Ok(otp_code) => {
-//             match services::mail::send_email_confirmation(&email, &otp_code.to_string()).await {
-//                 Ok(_) => {
-//                     return HttpResponse::Ok().json(json!({
-//                         "message": "otp resent successfully",
-//                         "otp": otp_code
-//                     }));
-//                 }
-//                 Err(err) => {
-//                     return HttpResponse::InternalServerError().json(json!({
-//                         "error": format!("failed to send email: {}", err)
-//                     }))
-//                 }
-//             }
-//         }
-//         Err(err) => {
-//             return HttpResponse::InternalServerError().json(json!({
-//                 "error": format!("failed to create otp: {}", err)
-//             }))
-//         }
-//     }
-// }
+    match Otp::update_otp(email.clone(), &data.db).await {
+        Ok((email, code)) => {
+            match services::mail::send_email_confirmation(&email, &code.to_string()).await {
+                Ok(_) => {
+                    return HttpResponse::Ok().json(json!({
+                        "message": "otp resent successfully",
+                        "otp": code
+                    }));
+                }
+                Err(err) =>
+                    return HttpResponse::InternalServerError().json(json!({
+                        "error": format!("failed to send email: {}", err)
+                    }))
+            }
+        }
+        Err(err) => {
+            return HttpResponse::InternalServerError().json(json!({
+                "error": format!("failed to update otp: {}", err)
+            }))
+        }
+    }
+}
 
 #[post("/logout")]
 async fn logout() -> impl Responder {
@@ -268,7 +249,7 @@ pub fn configure(cfg: &mut web::ServiceConfig) {
     cfg.service(register);
     cfg.service(verify);
     // cfg.service(login);
-    // cfg.service(resend_otp);
+    cfg.service(resend_otp);
     // cfg.service(logout);
     // cfg.service(forgot_password);
 }

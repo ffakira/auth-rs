@@ -104,11 +104,7 @@ impl Otp {
         }
     }
 
-    pub async fn update_otp(
-        &self,
-        email: String,
-        db: &Database,
-    ) -> Result<(String, u32), OtpError> {
+    pub async fn update_otp(email: String, db: &Database) -> Result<(String, u32), OtpError> {
         let collection: Collection<Otp> = db.collection("otp");
         let (_, expired_at) = Self::util_time(10).unwrap();
         let code = Self::generate_code();
