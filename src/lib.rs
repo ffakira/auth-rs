@@ -10,7 +10,7 @@ pub mod middleware;
 pub mod models;
 pub mod services;
 
-fn load_server_env() -> Result<(u16, String), Error> {
+fn load_server_env() -> Result<(u16, String, String), Error> {
     dotenv().ok();
     let port = env::var("SERVER_PORT")
         .map_err(|err| Error::new(ErrorKind::Other, format!("Error loading PORT: {}", err)))
@@ -25,18 +25,21 @@ fn load_server_env() -> Result<(u16, String), Error> {
             format!("Error loading SERVER_HOST: {}", err),
         )
     });
-    Ok((port, host.unwrap()))
+    let rust_env = env::var("RUST_ENV").unwrap_or("development".to_string());
+
+    Ok((port, host.unwrap(), rust_env))
 }
 
 #[derive(Clone)]
 pub struct AppState {
     db: Database,
+    rust_env: String,
 }
 
 pub async fn run() -> Result<(), Error> {
-    let (port, host) = load_server_env().unwrap();
+    let (port, host, rust_env) = load_server_env().unwrap();
     let (_, db) = db::mongo_client().await.unwrap();
-    let app_state = web::Data::new(AppState { db });
+    let app_state = web::Data::new(AppState { db, rust_env });
 
     HttpServer::new(move || {
         App::new()

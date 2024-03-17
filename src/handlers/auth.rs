@@ -132,6 +132,11 @@ async fn verify(otp: web::Json<Otp>, data: web::Data<AppState>) -> impl Responde
 #[post("/login")]
 async fn login(user: web::Json<User>, data: web::Data<AppState>) -> impl Responder {
     let user_data: User = user.into_inner();
+    let rust_env = if data.rust_env == "production" {
+        true
+    } else {
+        false
+    };
 
     if let Err(errors) = user_data.validate() {
         return HttpResponse::BadRequest().json(json!({
@@ -150,7 +155,7 @@ async fn login(user: web::Json<User>, data: web::Data<AppState>) -> impl Respond
                 Ok(_) => {
                     let auth_cookie = Cookie::build("logged_in", "true")
                         .path("/")
-                        .secure(false)
+                        .secure(rust_env)
                         .http_only(true)
                         .max_age(CookieDuration::minutes(10))
                         .finish();
